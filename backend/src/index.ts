@@ -12,6 +12,8 @@ import axios from 'axios'
 import FormData from 'form-data'
 import { z } from 'zod'
 import { Pool } from 'pg'
+import PDFDocument from 'pdfkit'
+import QRCode from 'qrcode'
 
 const app = express()
 const server = http.createServer(app)
@@ -413,6 +415,159 @@ app.get('/api/approvals/pending', authMiddleware, async (req, res) => {
     if (!user || user.role !== 'admin') return res.status(403).json({ error: 'Admin only' })
     const rows = await pool.query("SELECT * FROM assignments WHERE status='pending_approval' ORDER BY id DESC")
     res.json(rows.rows)
+})
+
+// PDF Report Generation
+app.get('/api/reports/device/:id', authMiddleware, async (req, res) => {
+    const deviceId = Number(req.params.id)
+    try {
+        // Get device data
+        const deviceResult = await pool.query('SELECT * FROM devices WHERE id=$1', [deviceId])
+        if (deviceResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Device not found' })
+        }
+        const device = deviceResult.rows[0]
+
+        // Get related data
+        const assignments = await pool.query(
+            'SELECT * FROM assignments WHERE device_id=$1 ORDER BY id DESC',
+            [deviceId]
+        )
+        const maintenance = await pool.query(
+            'SELECT * FROM maintenance WHERE device_id=$1 ORDER BY id DESC',
+            [deviceId]
+        )
+        const audit = await pool.query(
+            "SELECT * FROM audit_logs WHERE entity='device' AND entity_id=$1 ORDER BY id DESC",
+            [deviceId]
+        )
+
+        // Generate QR Code as data URL
+        const qrData = JSON.stringify({ deviceId: device.id, serial: device.serial, name: device.name })
+        const qrCodeDataURL = await QRCode.toDataURL(qrData, { width: 200 })
+
+        // Create PDF
+        const doc = new PDFDocument({ margin: 50 })
+        res.setHeader('Content-Type', 'application/pdf')
+        res.setHeader('Content-Disposition', `attachment; filename=device-${deviceId}-report.pdf`)
+        doc.pipe(res)
+
+        // Header
+        doc.fontSize(24).text('Device Report', { align: 'center' })
+        doc.moveDown()
+        doc.fontSize(12).text(`Generated: ${new Date().toLocaleString()}`, { align: 'center' })
+        doc.moveDown(2)
+
+        // Device Information
+        doc.fontSize(16).text('Device Information', { underline: true })
+        doc.moveDown(0.5)
+        doc.fontSize(12)
+        doc.text(`Name: ${device.name}`)
+        doc.text(`Serial Number: ${device.serial}`)
+        doc.text(`Category: ${device.category || 'N/A'}`)
+        doc.text(`Status: ${device.status}`)
+        doc.text(`Location: ${device.location || 'N/A'}`)
+        doc.moveDown()
+
+        // QR Code
+        if (qrCodeDataURL) {
+            doc.fontSize(14).text('QR Code', { underline: true })
+            doc.moveDown(0.5)
+            const qrBuffer = Buffer.from(qrCodeDataURL.split(',')[1], 'base64')
+            doc.image(qrBuffer, { width: 150 })
+            doc.moveDown(2)
+        }
+
+        // Assignments
+        doc.fontSize(16).text('Assignment History', { underline: true })
+        doc.moveDown(0.5)
+        doc.fontSize(10)
+        if (assignments.rows.length === 0) {
+            doc.text('No assignments recorded.')
+        } else {
+            assignments.rows.forEach((a: any, index: number) => {
+                doc.text(`${index + 1}. Assignment #${a.id}`)
+                doc.text(`   User ID: ${a.user_id}`, { indent: 20 })
+                doc.text(`   Status: ${a.status}`, { indent: 20 })
+                doc.text(`   Assigned: ${a.assigned_at || '—'}`, { indent: 20 })
+                doc.text(`   Returned: ${a.returned_at || '—'}`, { indent: 20 })
+                doc.moveDown(0.3)
+            })
+        }
+        doc.moveDown()
+
+        // Maintenance
+        doc.fontSize(16).text('Maintenance History', { underline: true })
+        doc.moveDown(0.5)
+        doc.fontSize(10)
+        if (maintenance.rows.length === 0) {
+            doc.text('No maintenance records.')
+        } else {
+            maintenance.rows.forEach((m: any, index: number) => {
+                doc.text(`${index + 1}. Maintenance #${m.id}`)
+                doc.text(`   Status: ${m.status}`, { indent: 20 })
+                doc.text(`   Date: ${m.maintenance_at}`, { indent: 20 })
+                doc.text(`   Notes: ${m.notes || '—'}`, { indent: 20 })
+                doc.moveDown(0.3)
+            })
+        }
+        doc.moveDown()
+
+        // Audit Trail
+        doc.fontSize(16).text('Audit Trail', { underline: true })
+        doc.moveDown(0.5)
+        doc.fontSize(10)
+        if (audit.rows.length === 0) {
+            doc.text('No audit records.')
+        } else {
+            audit.rows.slice(0, 10).forEach((a: any, index: number) => {
+                doc.text(`${index + 1}. ${a.action}`)
+                doc.text(`   ${a.old_status || ''} → ${a.new_status || ''}`, { indent: 20 })
+                doc.text(`   Date: ${a.created_at}`, { indent: 20 })
+                if (a.comments) doc.text(`   Comments: ${a.comments}`, { indent: 20 })
+                doc.moveDown(0.3)
+            })
+        }
+
+        // Footer
+        doc.moveDown(2)
+        doc.fontSize(8).text('This is an automated report generated by Device Tracking System.', { align: 'center' })
+
+        doc.end()
+    } catch (err: any) {
+        console.error('PDF generation error:', err)
+        res.status(500).json({ error: err.message || 'Failed to generate PDF report' })
+    }
+})
+
+// Analytics endpoint (for future real data)
+app.get('/api/analytics/overview', authMiddleware, async (req, res) => {
+    try {
+        const stats = await pool.query(`
+            SELECT 
+                COUNT(*) as total_devices,
+                COUNT(*) FILTER (WHERE status = 'available') as available,
+                COUNT(*) FILTER (WHERE status = 'assigned') as assigned,
+                COUNT(*) FILTER (WHERE status = 'maintenance') as maintenance,
+                COUNT(*) FILTER (WHERE status = 'lost') as lost,
+                COUNT(*) FILTER (WHERE status = 'retired') as retired
+            FROM devices
+        `)
+
+        const categoryStats = await pool.query(`
+            SELECT category, COUNT(*) as count 
+            FROM devices 
+            WHERE category IS NOT NULL 
+            GROUP BY category
+        `)
+
+        res.json({
+            overview: stats.rows[0],
+            categories: categoryStats.rows
+        })
+    } catch (err: any) {
+        res.status(500).json({ error: err.message || 'Analytics failed' })
+    }
 })
 
 const PORT = process.env.PORT || 4000
