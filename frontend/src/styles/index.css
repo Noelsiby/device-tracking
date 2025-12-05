@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light dark;
+}
+
+/* Light/Dark tokens (ShadCN-like) */
+:root {
+  --background: 255 255 255;
+  --foreground: 10 10 10;
+  --muted: 240 240 240;
+}
+:root.dark {
+  --background: 10 10 10;
+  --foreground: 245 245 245;
+  --muted: 30 30 30;
+}
+
+/* Tailwind CSS variables mapping */
+html {
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+body {
+  background-color: rgb(var(--background));
+  color: rgb(var(--foreground));
+}
