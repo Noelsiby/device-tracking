@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button'
-import { Alert, AlertDescription } from '../components/ui/alert'
+import { Alert, AlertTitle, AlertDescription } from '../components/ui/alert'
 import { QrCode, Smartphone, Camera, AlertCircle } from 'lucide-react'
 import { QRScanner } from '../components/QRScanner'
 import api from '../lib/api'
@@ -66,9 +66,9 @@ export default function QRScannerPage() {
 
                     {scannedData && (
                         <Alert>
+                            <AlertTitle>Scanned Device</AlertTitle>
                             <AlertDescription>
                                 <div className="space-y-1">
-                                    <div className="font-medium">Scanned Device:</div>
                                     <div>Name: {scannedData.name}</div>
                                     <div>Serial: {scannedData.serial}</div>
                                     <div>ID: {scannedData.deviceId}</div>
