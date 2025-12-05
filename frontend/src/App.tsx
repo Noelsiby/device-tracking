@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Routes, Route, Navigate, Link } from 'react-router-dom'
-import { Moon, Sun, LogOut, LayoutDashboard, Package, CheckCircle } from 'lucide-react'
+import { Moon, Sun, LogOut, LayoutDashboard, Package, CheckCircle, BarChart3, QrCode } from 'lucide-react'
 import Devices from './pages/Devices'
 import Login from './pages/Login'
 import DeviceDetail from './pages/DeviceDetail'
 import Approvals from './pages/Approvals'
 import Dashboard from './pages/Dashboard'
+import Analytics from './pages/Analytics'
+import QRScannerPage from './pages/QRScannerPage'
 import { ThemeProvider, useTheme } from './components/theme-provider'
 import { Button } from './components/ui/button'
 
@@ -61,6 +63,14 @@ function AppContent() {
                                     <Package className="h-4 w-4" />
                                     Devices
                                 </Link>
+                                <Link to="/analytics" className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground h-9 px-3 gap-2">
+                                    <BarChart3 className="h-4 w-4" />
+                                    Analytics
+                                </Link>
+                                <Link to="/qr-scanner" className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground h-9 px-3 gap-2">
+                                    <QrCode className="h-4 w-4" />
+                                    QR Scanner
+                                </Link>
                                 {role === 'admin' && (
                                     <Link to="/approvals" className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground h-9 px-3 gap-2">
                                         <CheckCircle className="h-4 w-4" />
@@ -85,6 +95,8 @@ function AppContent() {
                         <Route path="/login" element={<Login />} />
                         <Route path="/dashboard" element={isAuthed ? <Dashboard /> : <Navigate to="/login" />} />
                         <Route path="/devices" element={isAuthed ? <Devices /> : <Navigate to="/login" />} />
+                        <Route path="/analytics" element={isAuthed ? <Analytics /> : <Navigate to="/login" />} />
+                        <Route path="/qr-scanner" element={isAuthed ? <QRScannerPage /> : <Navigate to="/login" />} />
                         <Route path="/approvals" element={isAuthed && role === 'admin' ? <Approvals /> : <Navigate to="/login" />} />
                         <Route path="/devices/:id" element={isAuthed ? <DeviceDetail /> : <Navigate to="/login" />} />
                         <Route path="*" element={<Navigate to={isAuthed ? '/dashboard' : '/login'} />} />

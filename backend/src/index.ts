@@ -473,8 +473,11 @@ app.get('/api/reports/device/:id', authMiddleware, async (req, res) => {
         if (qrCodeDataURL) {
             doc.fontSize(14).text('QR Code', { underline: true })
             doc.moveDown(0.5)
-            const qrBuffer = Buffer.from(qrCodeDataURL.split(',')[1], 'base64')
-            doc.image(qrBuffer, { width: 150 })
+            const base64Data = qrCodeDataURL.split(',')[1];
+            if (base64Data) {
+                const qrBuffer = Buffer.from(base64Data, 'base64')
+                doc.image(qrBuffer, { width: 150 })
+            }
             doc.moveDown(2)
         }
 
