@@ -1,12 +1,32 @@
 import { useEffect, useState } from 'react'
 import { Routes, Route, Navigate, Link } from 'react-router-dom'
+import { Moon, Sun, LogOut, LayoutDashboard, Package, CheckCircle } from 'lucide-react'
 import Devices from './pages/Devices'
 import Login from './pages/Login'
 import DeviceDetail from './pages/DeviceDetail'
 import Approvals from './pages/Approvals'
 import Dashboard from './pages/Dashboard'
+import { ThemeProvider, useTheme } from './components/theme-provider'
+import { Button } from './components/ui/button'
 
-function App() {
+function ThemeToggle() {
+    const { theme, setTheme } = useTheme()
+
+    return (
+        <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            className="rounded-full"
+        >
+            <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+            <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+            <span className="sr-only">Toggle theme</span>
+        </Button>
+    )
+}
+
+function AppContent() {
     const [ready, setReady] = useState(false)
     useEffect(() => {
         const t = setTimeout(() => setReady(true), 200)
@@ -16,23 +36,50 @@ function App() {
     const isAuthed = !!localStorage.getItem('token')
     const role = localStorage.getItem('role')
 
+    const handleLogout = () => {
+        localStorage.removeItem('token')
+        localStorage.removeItem('role')
+        location.href = '/login'
+    }
+
     return (
         <div className="min-h-screen bg-background text-foreground">
-            <header className="p-4 border-b flex items-center justify-between">
-                <h1 className="text-xl font-semibold">Device Tracking</h1>
-                <nav className="flex gap-3 text-sm">
-                    <Link to="/dashboard">Dashboard</Link>
-                    <Link to="/devices">Devices</Link>
-                    {role === 'admin' && (
-                        <Link to="/approvals">Approvals</Link>
-                    )}
-                    {isAuthed ? (
-                        <button onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('role'); location.href = '/login' }} className="border rounded px-2 py-1">Logout</button>
-                    ) : (
-                        <Link to="/login">Login</Link>
-                    )}                </nav>
+            <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+                <div className="container flex h-16 items-center px-4">
+                    <div className="flex items-center gap-2 font-bold text-lg">
+                        <Package className="h-6 w-6 text-primary" />
+                        <span>Device Tracking</span>
+                    </div>
+                    <nav className="ml-auto flex items-center gap-2">
+                        {isAuthed && (
+                            <>
+                                <Link to="/dashboard" className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground h-9 px-3 gap-2">
+                                    <LayoutDashboard className="h-4 w-4" />
+                                    Dashboard
+                                </Link>
+                                <Link to="/devices" className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground h-9 px-3 gap-2">
+                                    <Package className="h-4 w-4" />
+                                    Devices
+                                </Link>
+                                {role === 'admin' && (
+                                    <Link to="/approvals" className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground h-9 px-3 gap-2">
+                                        <CheckCircle className="h-4 w-4" />
+                                        Approvals
+                                    </Link>
+                                )}
+                            </>
+                        )}
+                        <ThemeToggle />
+                        {isAuthed && (
+                            <Button variant="outline" size="sm" onClick={handleLogout} className="flex items-center gap-2">
+                                <LogOut className="h-4 w-4" />
+                                Logout
+                            </Button>
+                        )}
+                    </nav>
+                </div>
             </header>
-            <main className="p-4">
+            <main className="container mx-auto p-4 md:p-6 lg:p-8">
                 {ready ? (
                     <Routes>
                         <Route path="/login" element={<Login />} />
@@ -43,10 +90,22 @@ function App() {
                         <Route path="*" element={<Navigate to={isAuthed ? '/dashboard' : '/login'} />} />
                     </Routes>
                 ) : (
-                    <div className="animate-pulse h-20 bg-muted rounded" />
+                    <div className="grid gap-4 md:grid-cols-3">
+                        {[1, 2, 3].map(i => (
+                            <div key={i} className="h-32 animate-pulse rounded-lg bg-muted" />
+                        ))}
+                    </div>
                 )}
             </main>
         </div>
+    )
+}
+
+function App() {
+    return (
+        <ThemeProvider defaultTheme="system" storageKey="device-tracking-theme">
+            <AppContent />
+        </ThemeProvider>
     )
 }
 
