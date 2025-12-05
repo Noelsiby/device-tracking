@@ -70,7 +70,7 @@ const authMiddleware = (req: express.Request, res: express.Response, next: expre
     }
 }
 
-// Uploads
+// Uploads with security
 const storage = multer.diskStorage({
     destination: (_, __, cb) => cb(null, path.join(process.cwd(), 'uploads')),
     filename: (_, file, cb) => {
@@ -79,7 +79,18 @@ const storage = multer.diskStorage({
         cb(null, unique + ext)
     }
 })
-const upload = multer({ storage })
+const upload = multer({
+    storage,
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+    fileFilter: (_, file, cb) => {
+        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'application/pdf']
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true)
+        } else {
+            cb(new Error('Invalid file type. Only images and PDFs allowed.'))
+        }
+    }
+})
 
 // Schemas
 const DeviceSchema = z.object({
@@ -88,6 +99,17 @@ const DeviceSchema = z.object({
     category: z.string().min(1),
     status: z.string().default('inventory'),
     location: z.string().optional()
+})
+
+const AssignSchema = z.object({
+    deviceId: z.number().int().positive(),
+    userId: z.number().int().positive(),
+    notes: z.string().optional()
+})
+
+const DeviceStatusSchema = z.object({
+    status: z.enum(['inventory', 'assigned', 'maintenance', 'retired', 'lost']),
+    comments: z.string().optional()
 })
 
 // Socket.IO
@@ -127,7 +149,6 @@ app.post('/api/devices', authMiddleware, async (req, res) => {
     )
     io.emit('device:created', result.rows[0])
     io.emit('dashboard:update')
-    io.emit('dashboard:update')
     res.status(201).json(result.rows[0])
 })
 
@@ -160,13 +181,13 @@ app.get('/api/devices/:id', authMiddleware, async (req, res) => {
 
 app.post('/api/devices/:id/status', authMiddleware, async (req, res) => {
     const id = Number(req.params.id)
-    const { status, comments } = req.body
-    const allowed = ['inventory', 'assigned', 'maintenance', 'retired', 'lost']
+    const parsed = DeviceStatusSchema.safeParse(req.body)
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
+    const { status, comments } = parsed.data
     const user = (req as any).user
     if (!user || user.role !== 'admin') return res.status(403).json({ error: 'Admin only' })
-    if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' })
     const current = await pool.query('SELECT status FROM devices WHERE id=$1', [id])
-    if (current.rows.length === 0) return res.status(404).json({ error: 'Not found' })
+    if (current.rows.length === 0) return res.status(404).json({ error: 'Device not found' })
     const oldStatus = current.rows[0].status
     await pool.query('UPDATE devices SET status=$1 WHERE id=$2', [status, id])
     await pool.query(
@@ -175,28 +196,33 @@ app.post('/api/devices/:id/status', authMiddleware, async (req, res) => {
     )
     io.emit('device:status', { id, status })
     io.emit('dashboard:update')
-    io.emit('dashboard:update')
     res.json({ id, status })
 })
 
 
 app.post('/api/assign', authMiddleware, async (req, res) => {
-    const { deviceId, userId, notes } = req.body
-    const user = (req as any).user
-    const pending = APPROVAL_REQUIRED && user.role !== 'admin'
-    const result = await pool.query(
-        pending
-            ? 'INSERT INTO assignments(device_id, user_id, requested_by, notes, status) VALUES($1,$2,$3,$4,$5) RETURNING *'
-            : 'INSERT INTO assignments(device_id, user_id, assigned_at, requested_by, notes, status) VALUES($1,$2,NOW(),$3,$4,$5) RETURNING *',
-        [deviceId, userId, user.id, notes || null, pending ? 'pending_approval' : 'assigned']
-    )
-    if (!pending) {
-        await pool.query('UPDATE devices SET status=$1 WHERE id=$2', ['assigned', deviceId])
-        io.emit('assignment:created', result.rows[0])
-        io.emit('dashboard:update')
-        io.emit('dashboard:update')
+    try {
+        const parsed = AssignSchema.safeParse(req.body)
+        if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
+        const { deviceId, userId, notes } = parsed.data
+        const user = (req as any).user
+        const pending = APPROVAL_REQUIRED && user.role !== 'admin'
+        const result = await pool.query(
+            pending
+                ? 'INSERT INTO assignments(device_id, user_id, requested_by, notes, status) VALUES($1,$2,$3,$4,$5) RETURNING *'
+                : 'INSERT INTO assignments(device_id, user_id, assigned_at, requested_by, notes, status) VALUES($1,$2,NOW(),$3,$4,$5) RETURNING *',
+            [deviceId, userId, user.id, notes || null, pending ? 'pending_approval' : 'assigned']
+        )
+        if (!pending) {
+            await pool.query('UPDATE devices SET status=$1 WHERE id=$2', ['assigned', deviceId])
+            io.emit('assignment:created', result.rows[0])
+            io.emit('dashboard:update')
+        }
+        res.status(201).json(result.rows[0])
+    } catch (e: any) {
+        console.error('Assignment error:', e)
+        res.status(500).json({ error: e.message || 'Failed to create assignment' })
     }
-    res.status(201).json(result.rows[0])
 })
 
 app.post('/api/assign/:id/approve', authMiddleware, async (req, res) => {
@@ -212,23 +238,82 @@ app.post('/api/assign/:id/approve', authMiddleware, async (req, res) => {
     const updated = await pool.query('SELECT * FROM assignments WHERE id=$1', [id])
     io.emit('assignment:approved', updated.rows[0])
     io.emit('dashboard:update')
-    io.emit('dashboard:update')
     res.json(updated.rows[0])
 })
 
 
 
 app.post('/api/return', authMiddleware, upload.single('photo'), async (req, res) => {
-    const { assignmentId, condition, notes } = req.body
-    const photoPath = req.file ? `/uploads/${req.file.filename}` : null
-    const result = await pool.query(
-        'UPDATE assignments SET returned_at=NOW(), notes=$1, status=$2, return_photo=$3 WHERE id=$4 RETURNING *',
-        [notes || null, condition || 'returned', photoPath, assignmentId]
-    )
-    const assignment = result.rows[0]
-    await pool.query('UPDATE devices SET status=$1 WHERE id=$2', ['inventory', assignment.device_id])
-    io.emit('assignment:returned', assignment)
-    res.json(assignment)
+    try {
+        const { assignmentId, condition, notes } = req.body
+        if (!assignmentId) return res.status(400).json({ error: 'assignmentId is required' })
+        const photoPath = req.file ? `/uploads/${req.file.filename}` : null
+        const result = await pool.query(
+            'UPDATE assignments SET returned_at=NOW(), notes=$1, status=$2, return_photo=$3 WHERE id=$4 RETURNING *',
+            [notes || null, condition || 'returned', photoPath, assignmentId]
+        )
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Assignment not found' })
+        const assignment = result.rows[0]
+        await pool.query('UPDATE devices SET status=$1 WHERE id=$2', ['inventory', assignment.device_id])
+        io.emit('assignment:returned', assignment)
+        io.emit('dashboard:update')
+        res.json(assignment)
+    } catch (e: any) {
+        console.error('Return error:', e)
+        res.status(500).json({ error: e.message || 'Failed to return device' })
+    }
+})
+
+app.post('/api/return-with-ai', authMiddleware, upload.single('photo'), async (req, res) => {
+    try {
+        const { deviceId, condition, notes } = req.body
+        if (!deviceId) return res.status(400).json({ error: 'deviceId is required' })
+
+        // Find active assignment for this device
+        const activeAssignment = await pool.query(
+            "SELECT id FROM assignments WHERE device_id=$1 AND status='assigned' ORDER BY id DESC LIMIT 1",
+            [deviceId]
+        )
+        if (activeAssignment.rows.length === 0) {
+            return res.status(404).json({ error: 'No active assignment found for this device' })
+        }
+        const assignmentId = activeAssignment.rows[0].id
+
+        let aiDetection = null
+        const photoPath = req.file ? `/uploads/${req.file.filename}` : null
+
+        // If photo uploaded, run AI damage detection
+        if (req.file) {
+            try {
+                const filePath = path.join(process.cwd(), 'uploads', req.file.filename)
+                const form = new FormData()
+                form.append('photo', fs.createReadStream(filePath), req.file.originalname)
+                const aiResponse = await axios.post(`${AI_URL}/damage-detect`, form, { headers: form.getHeaders() })
+                aiDetection = aiResponse.data
+            } catch (aiError) {
+                console.error('AI detection failed:', aiError)
+                // Continue without AI detection if service is down
+            }
+        }
+
+        // Update assignment with return info
+        const result = await pool.query(
+            'UPDATE assignments SET returned_at=NOW(), notes=$1, status=$2, return_photo=$3 WHERE id=$4 RETURNING *',
+            [notes || null, condition || 'returned', photoPath, assignmentId]
+        )
+        const assignment = result.rows[0]
+
+        // Update device status
+        await pool.query('UPDATE devices SET status=$1 WHERE id=$2', ['inventory', deviceId])
+
+        io.emit('assignment:returned', assignment)
+        io.emit('dashboard:update')
+
+        res.json({ assignment, ai: aiDetection })
+    } catch (e: any) {
+        console.error('Return with AI error:', e)
+        res.status(500).json({ error: e.message || 'Failed to return device with AI' })
+    }
 })
 
 app.post('/api/audit', authMiddleware, async (req, res) => {
@@ -247,15 +332,19 @@ app.post('/api/upload', authMiddleware, upload.single('file'), (req, res) => {
 
 app.post('/api/ai/damage-detect', authMiddleware, upload.single('photo'), async (req, res) => {
     try {
-        if (!req.file) return res.status(400).json({ error: 'No photo' })
+        if (!req.file) return res.status(400).json({ error: 'Photo is required' })
         const filePath = path.join(process.cwd(), 'uploads', req.file.filename)
         const form = new FormData()
         form.append('photo', fs.createReadStream(filePath), req.file.originalname)
         const r = await axios.post(`${AI_URL}/damage-detect`, form, { headers: form.getHeaders() })
         res.json({ ai: r.data, path: `/uploads/${req.file.filename}` })
-    } catch (e) {
-        console.error(e)
-        res.status(500).json({ error: 'AI proxy error' })
+    } catch (e: any) {
+        console.error('AI damage detection error:', e)
+        if (e.code === 'ECONNREFUSED') {
+            res.status(503).json({ error: 'AI service is unavailable. Please ensure it is running on ' + AI_URL })
+        } else {
+            res.status(500).json({ error: e.message || 'AI detection failed' })
+        }
     }
 })
 
@@ -278,35 +367,44 @@ app.get('/api/dashboard/stats', authMiddleware, async (_, res) => {
 app.post('/api/sync', authMiddleware, async (req, res) => {
     try {
         const { actions } = req.body
-        if (!Array.isArray(actions)) return res.status(400).json({ error: 'Invalid payload' })
+        if (!Array.isArray(actions)) return res.status(400).json({ error: 'Invalid payload: actions must be an array' })
         const results: any[] = []
         for (const a of actions) {
             if (a?.type === 'assign') {
-                const result = await pool.query(
-                    'INSERT INTO assignments(device_id, user_id, assigned_at, notes, status) VALUES($1,$2,NOW(),$3,$4) RETURNING *',
-                    [a.deviceId, a.userId, a.notes || null, 'assigned']
-                )
-                await pool.query('UPDATE devices SET status=$1 WHERE id=$2', ['assigned', a.deviceId])
-                results.push({ type: 'assign', id: result.rows[0].id })
+                try {
+                    const result = await pool.query(
+                        'INSERT INTO assignments(device_id, user_id, assigned_at, notes, status) VALUES($1,$2,NOW(),$3,$4) RETURNING *',
+                        [a.deviceId, a.userId, a.notes || null, 'assigned']
+                    )
+                    await pool.query('UPDATE devices SET status=$1 WHERE id=$2', ['assigned', a.deviceId])
+                    results.push({ type: 'assign', id: result.rows[0].id, success: true })
+                } catch (err: any) {
+                    results.push({ type: 'assign', error: err.message, success: false })
+                }
             } else if (a?.type === 'return') {
                 const found = await pool.query("SELECT id FROM assignments WHERE device_id=$1 AND status='assigned' ORDER BY id DESC LIMIT 1", [a.deviceId])
                 if (found.rows.length) {
-                    const assignmentId = found.rows[0].id
-                    const result = await pool.query(
-                        'UPDATE assignments SET returned_at=NOW(), notes=$1, status=$2 WHERE id=$3 RETURNING *',
-                        [a.notes || null, a.condition || 'returned', assignmentId]
-                    )
-                    await pool.query('UPDATE devices SET status=$1 WHERE id=$2', ['inventory', a.deviceId])
-                    results.push({ type: 'return', id: result.rows[0].id })
+                    try {
+                        const assignmentId = found.rows[0].id
+                        const result = await pool.query(
+                            'UPDATE assignments SET returned_at=NOW(), notes=$1, status=$2 WHERE id=$3 RETURNING *',
+                            [a.notes || null, a.condition || 'returned', assignmentId]
+                        )
+                        await pool.query('UPDATE devices SET status=$1 WHERE id=$2', ['inventory', a.deviceId])
+                        results.push({ type: 'return', id: result.rows[0].id, success: true })
+                    } catch (err: any) {
+                        results.push({ type: 'return', error: err.message, success: false })
+                    }
                 } else {
-                    results.push({ type: 'return', error: 'No active assignment' })
+                    results.push({ type: 'return', error: 'No active assignment found', success: false })
                 }
             }
         }
-        res.json({ results })
-    } catch (e) {
-        console.error(e)
-        res.status(500).json({ error: 'Sync failed' })
+        io.emit('dashboard:update')
+        res.json({ results, synced: results.filter(r => r.success).length })
+    } catch (e: any) {
+        console.error('Sync error:', e)
+        res.status(500).json({ error: e.message || 'Sync failed' })
     }
 })
 
@@ -315,21 +413,6 @@ app.get('/api/approvals/pending', authMiddleware, async (req, res) => {
     if (!user || user.role !== 'admin') return res.status(403).json({ error: 'Admin only' })
     const rows = await pool.query("SELECT * FROM assignments WHERE status='pending_approval' ORDER BY id DESC")
     res.json(rows.rows)
-})
-
-app.get('/api/dashboard/stats', authMiddleware, async (_, res) => {
-    const available = await pool.query("SELECT COUNT(*) FROM devices WHERE status='inventory'")
-    const assigned = await pool.query("SELECT COUNT(*) FROM devices WHERE status='assigned'")
-    const maintenance = await pool.query("SELECT COUNT(*) FROM devices WHERE status='maintenance'")
-    const lost = await pool.query("SELECT COUNT(*) FROM devices WHERE status='lost'")
-    const overdue = await pool.query("SELECT COUNT(*) FROM assignments WHERE status='assigned' AND returned_at IS NULL AND assigned_at < NOW() - INTERVAL '7 days'")
-    res.json({
-        available: Number(available.rows[0].count),
-        assigned: Number(assigned.rows[0].count),
-        maintenance: Number(maintenance.rows[0].count),
-        lost: Number(lost.rows[0].count),
-        overdue: Number(overdue.rows[0].count)
-    })
 })
 
 const PORT = process.env.PORT || 4000
